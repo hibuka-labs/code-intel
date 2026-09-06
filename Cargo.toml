@@ -1,0 +1,43 @@
+[package]
+name = "code-intel"
+version = "0.1.0"
+edition = "2024"
+description = "Language intelligence toolkit: multi-server LSP diagnostics, repo map, ripgrep search, language registry"
+license = "MIT"
+repository = "https://github.com/hibuka-labs/code-intel"
+keywords = ["lsp", "tree-sitter", "ripgrep", "code-intelligence", "diagnostics"]
+categories = ["development-tools"]
+
+[features]
+default = ["lsp", "repomap"]
+# LSP client + diagnostics formatting. Protocol types come from lsp-types; the
+# client itself is hand-rolled and fully synchronous (std threads + channels).
+lsp = ["dep:lsp-types"]
+# Repo map: tree-sitter symbol extraction across 7 grammars (the heavy part —
+# consumers who only want LSP diagnostics can skip it).
+repomap = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-java",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-c",
+    "dep:tree-sitter-cpp",
+    "dep:tree-sitter-python",
+]
+
+[dependencies]
+lsp-types = { version = "0.95", optional = true }
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.23", optional = true }
+tree-sitter-c = { version = "0.23", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
