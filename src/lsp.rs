@@ -1,20 +1,23 @@
-//! 手写的最小 LSP 客户端（多 server）：只做 diagnostics。
+//! Hand-rolled minimal LSP client (multi-server): diagnostics only.
 //!
-//! 依赖 `lsp-types` 仅作协议类型基础（`InitializeParams`/`Diagnostic` 等）；
-//! JSON-RPC 帧（Content-Length）、握手、server 进程管理、`publishDiagnostics`
-//! 缓存全部手写，不引入重依赖 LSP 客户端封装。
+//! Depends on `lsp-types` only for protocol type primitives (`InitializeParams`/`Diagnostic`,
+//! etc.); JSON-RPC framing (Content-Length), the handshake, server process management, and the
+//! `publishDiagnostics` cache are all hand-rolled — no heavy LSP client wrapper dependency.
 //!
-//! 架构（高内聚低耦合）：
-//! - 纯函数（无 I/O，可单测）：`frame_message` / `decode_frames` 帧编解码、
-//!   `build_*` 消息构造、`parse_publish_diagnostics` / `flatten_diagnostic` 解析。
-//! - `LspClient`（有状态）：启动一个 server（argv 由调用方给定），起
-//!   reader / driver 两个后台线程负责读 stdout / 写 stdin，诊断缓存进
-//!   `Arc<Mutex<HashMap<…>>>` 供工具层读。启动或握手失败记进 `state.error`，
-//!   工具层经 `health()` 感知并降级到 shell 命令。
-//! - `LspManager`：按文件语言惰性路由到对应 server（进程共享）。路由规则不
-//!   硬编码——构造时注入 `impl Fn(&Path) -> Option<LspServerSpec>`（典型实现
-//!   包一层 `lang::lsp_spec_for_path`）；`ClientInfo`（initialize 握手里的
-//!   客户端身份）同样构造时注入。
+//! Architecture (high cohesion, low coupling):
+//! - Pure functions (no I/O, unit-testable): `frame_message` / `decode_frames` frame
+//!   encode/decode, `build_*` message construction, `parse_publish_diagnostics` /
+//!   `flatten_diagnostic` parsing.
+//! - `LspClient` (stateful): starts one server (argv given by the caller) and spawns
+//!   reader / driver background threads for reading stdout / writing stdin; diagnostics are
+//!   cached in `Arc<Mutex<HashMap<…>>>` for the tool layer to read. Startup or handshake
+//!   failures are recorded in `state.error`; the tool layer sees them via `health()` and
+//!   degrades to shell commands.
+//! - `LspManager`: lazily routes each file's language to the matching server (processes are
+//!   shared). Routing rules are not hard-coded — the constructor injects
+//!   `impl Fn(&Path) -> Option<LspServerSpec>` (typically wrapping
+//!   `lang::lsp_spec_for_path`); `ClientInfo` (the client identity in the initialize
+//!   handshake) is likewise injected at construction.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -26,42 +29,45 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use lsp_types::{
-    notification::{
-        DidChangeTextDocument, DidOpenTextDocument, DidSaveTextDocument, Initialized,
-        Notification, PublishDiagnostics,
-    },
-    request::{Initialize, Request},
     ClientCapabilities, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializedParams,
     NumberOrString, PublishDiagnosticsParams, TextDocumentContentChangeEvent,
     TextDocumentIdentifier, TextDocumentItem, Url, VersionedTextDocumentIdentifier,
     WorkspaceFolder,
+    notification::{
+        DidChangeTextDocument, DidOpenTextDocument, DidSaveTextDocument, Initialized, Notification,
+        PublishDiagnostics,
+    },
+    request::{Initialize, Request},
 };
 use serde_json::{Value, json};
 
-/// 协议类型再导出：消费方构造 `ClientInfo` 无需直接依赖 lsp-types。
+/// Protocol type re-export: consumers can build `ClientInfo` without depending on lsp-types
+/// directly.
 pub use lsp_types::ClientInfo;
 
-/// 握手（initialize 响应）超时。
+/// Handshake (initialize response) timeout.
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// 解析出的 LSP server 启动规格（argv，首元素是二进制名）。
+/// Resolved LSP server launch spec (argv; the first element is the binary name).
 ///
-/// `command` 用 `Vec<String>` 而非注册表的 `&'static [&'static str]`：resolver
-/// 是注入的，规格允许来自运行时构造（非 static 表）。
+/// `command` is a `Vec<String>` rather than the registry's `&'static [&'static str]`: the
+/// resolver is injected, so specs may be constructed at runtime (not from a static table).
 #[derive(Debug, Clone)]
 pub struct LspServerSpec {
     pub command: Vec<String>,
 }
 
-/// 路径 → 该语言的 LSP server 规格。`None` 表示该语言没有 server（工具层降级）。
+/// Path → the LSP server spec for that language. `None` means the language has no server
+/// (the tool layer degrades).
 ///
-/// code-intel 不绑定内置语言注册表：路由规则由消费方在 `LspManager` 构造时注入。
+/// code-intel binds to no built-in language registry: routing rules are injected by the
+/// consumer at `LspManager` construction.
 pub type SpecResolver = dyn Fn(&Path) -> Option<LspServerSpec> + Send + Sync;
 
-// ---------------- 扁平化诊断 ----------------
+// ---------------- Flattened diagnostics ----------------
 
-/// 扁平化后的诊断严重级别（剥离 lsp_types 的 `DiagnosticSeverity`）。
+/// Flattened diagnostic severity (decoupled from lsp_types' `DiagnosticSeverity`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
@@ -71,7 +77,7 @@ pub enum Severity {
 }
 
 impl Severity {
-    /// 摘要里的标签列（诊断没有 code 时兜底）。
+    /// Label column in the summary (fallback when the diagnostic has no code).
     pub fn label(self) -> &'static str {
         match self {
             Severity::Error => "error",
@@ -82,7 +88,8 @@ impl Severity {
     }
 }
 
-/// 扁平化诊断条目：1-based 行列、消息、可选错误码。工具层不感知协议类型。
+/// Flattened diagnostic entry: 1-based line/column, message, optional error code. The tool
+/// layer never sees protocol types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticEntry {
     pub severity: Severity,
@@ -92,26 +99,24 @@ pub struct DiagnosticEntry {
     pub code: Option<String>,
 }
 
-// ---------------- 纯函数（无 I/O，可单测） ----------------
+// ---------------- Pure functions (no I/O, unit-testable) ----------------
 
-/// 把一条 JSON-RPC 消息编码成 Content-Length 帧（body 按**字节**计数）。
+/// Encode one JSON-RPC message into a Content-Length frame (body counted in **bytes**).
 pub fn frame_message(body: &Value) -> String {
     let body = serde_json::to_string(body).expect("lsp message serializes");
     format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
 }
 
-/// 从字节缓冲里解析出完整帧。
+/// Parse complete frames out of a byte buffer.
 ///
-/// 返回 `(已解析出的 JSON 消息, 已消费的字节数)`。遇到不完整的帧头/帧体时停止并
-/// 保留未消费字节——`pos` 指向首个未解析字节，调用方据此 `drain(..pos)` 截断缓冲。
+/// Returns `(parsed JSON messages, consumed byte count)`. Stops on an incomplete frame
+/// header/body and keeps the unconsumed bytes — `pos` points at the first unparsed byte so
+/// the caller can truncate the buffer with `drain(..pos)`.
 pub fn decode_frames(buf: &[u8]) -> (Vec<Value>, usize) {
     let mut frames = Vec::new();
     let mut pos = 0usize;
 
-    loop {
-        let Some(off) = buf[pos..].windows(4).position(|w| w == &b"\r\n\r\n"[..]) else {
-            break;
-        };
+    while let Some(off) = buf[pos..].windows(4).position(|w| w == &b"\r\n\r\n"[..]) {
         let header_end = pos + off;
         let header = &buf[pos..header_end];
 
@@ -124,7 +129,7 @@ pub fn decode_frames(buf: &[u8]) -> (Vec<Value>, usize) {
             }
         }
         let Some(len) = content_len else {
-            // 帧头缺 Content-Length：跳过一字节继续，避免死循环。
+            // Header missing Content-Length: skip one byte and continue to avoid an infinite loop.
             pos += 1;
             continue;
         };
@@ -132,7 +137,7 @@ pub fn decode_frames(buf: &[u8]) -> (Vec<Value>, usize) {
         let body_start = header_end + 4;
         let body_end = body_start + len;
         if buf.len() < body_end {
-            break; // 帧体不完整，等更多字节。
+            break; // Incomplete body; wait for more bytes.
         }
         if let Ok(v) = serde_json::from_slice::<Value>(&buf[body_start..body_end]) {
             frames.push(v);
@@ -143,7 +148,7 @@ pub fn decode_frames(buf: &[u8]) -> (Vec<Value>, usize) {
     (frames, pos)
 }
 
-/// 请求 / 通知 / 响应的 JSON-RPC 信封。
+/// JSON-RPC envelopes for requests / notifications / responses.
 fn request(id: u64, method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
 }
@@ -151,15 +156,15 @@ fn notification(method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "method": method, "params": params })
 }
 
-/// 绝对路径 → `file://` URI（rust-analyzer 用 URI 标识文档）。
+/// Absolute path → `file://` URI (rust-analyzer identifies documents by URI).
 pub fn uri_from_path(path: &Path) -> Url {
     Url::from_file_path(path).unwrap_or_else(|()| {
-        // 兜底：正常情况 `from_file_path` 对绝对路径总会成功。
+        // Fallback: in practice `from_file_path` always succeeds for absolute paths.
         Url::parse(&format!("file://{}", path.to_string_lossy())).expect("path converts to url")
     })
 }
 
-/// `file://` URI → 绝对路径；非 file 协议或非法路径返回 None。
+/// `file://` URI → absolute path; returns None for non-file schemes or invalid paths.
 pub fn path_from_uri(uri: &Url) -> Option<PathBuf> {
     if uri.scheme() != "file" {
         return None;
@@ -167,9 +172,11 @@ pub fn path_from_uri(uri: &Url) -> Option<PathBuf> {
     uri.to_file_path().ok()
 }
 
-/// 构造 `initialize` 请求（只声明 `workspaceFolders`，回避已废弃的 `rootUri`）。
+/// Build the `initialize` request (declares only `workspaceFolders`, avoiding the
+/// deprecated `rootUri`).
 ///
-/// `client_info` 是握手里的客户端身份（name/version），由消费方注入而非硬编码。
+/// `client_info` is the client identity (name/version) in the handshake, injected by the
+/// consumer rather than hard-coded.
 pub fn build_initialize_request(id: u64, workspace_root: &Path, client_info: ClientInfo) -> Value {
     let uri = uri_from_path(workspace_root);
     let name = workspace_root
@@ -191,7 +198,7 @@ pub fn build_initialize_request(id: u64, workspace_root: &Path, client_info: Cli
     )
 }
 
-/// 构造 `initialized` 通知（握手第二步）。
+/// Build the `initialized` notification (second handshake step).
 pub fn build_initialized_notification() -> Value {
     notification(
         Initialized::METHOD,
@@ -199,8 +206,8 @@ pub fn build_initialized_notification() -> Value {
     )
 }
 
-/// 构造 `textDocument/didOpen` 通知（version=1）。`language_id` 来自注册表
-/// （`lang::lsp_language_id`），例如 "rust"/"typescript"/"cpp"。
+/// Build the `textDocument/didOpen` notification (version=1). `language_id` comes from the
+/// registry (`lang::lsp_language_id`), e.g. "rust"/"typescript"/"cpp".
 pub fn build_did_open(uri: &Url, text: &str, language_id: &str) -> Value {
     let params = DidOpenTextDocumentParams {
         text_document: TextDocumentItem::new(uri.clone(), language_id.into(), 1, text.to_string()),
@@ -211,7 +218,8 @@ pub fn build_did_open(uri: &Url, text: &str, language_id: &str) -> Value {
     )
 }
 
-/// 构造 `textDocument/didChange` 通知（全量同步：省略 range = 整篇替换）。
+/// Build the `textDocument/didChange` notification (full sync: omitting range = whole
+/// document replacement).
 pub fn build_did_change(uri: &Url, version: i32, text: &str) -> Value {
     let params = DidChangeTextDocumentParams {
         text_document: VersionedTextDocumentIdentifier::new(uri.clone(), version),
@@ -227,8 +235,8 @@ pub fn build_did_change(uri: &Url, version: i32, text: &str) -> Value {
     )
 }
 
-/// 构造 `textDocument/didSave` 通知（带 text，触发 rust-analyzer 的 checkOnSave →
-/// cargo check → publishDiagnostics）。
+/// Build the `textDocument/didSave` notification (with text, triggering rust-analyzer's
+/// checkOnSave → cargo check → publishDiagnostics).
 pub fn build_did_save(uri: &Url, text: &str) -> Value {
     let params = DidSaveTextDocumentParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
@@ -240,7 +248,7 @@ pub fn build_did_save(uri: &Url, text: &str) -> Value {
     )
 }
 
-/// 把 lsp-types 的 `Diagnostic` 扁平化成 `DiagnosticEntry`（0-based → 1-based）。
+/// Flatten lsp_types' `Diagnostic` into a `DiagnosticEntry` (0-based → 1-based).
 pub fn flatten_diagnostic(d: &Diagnostic) -> DiagnosticEntry {
     let severity = if d.severity == Some(DiagnosticSeverity::ERROR) {
         Severity::Error
@@ -251,7 +259,7 @@ pub fn flatten_diagnostic(d: &Diagnostic) -> DiagnosticEntry {
     } else if d.severity == Some(DiagnosticSeverity::HINT) {
         Severity::Hint
     } else {
-        // 规范里 severity 可省略，保守当作 error 突出显示。
+        // severity is optional per the spec; conservatively treat it as error to highlight it.
         Severity::Error
     };
     let code = match &d.code {
@@ -263,16 +271,17 @@ pub fn flatten_diagnostic(d: &Diagnostic) -> DiagnosticEntry {
         severity,
         line: d.range.start.line + 1,
         column: d.range.start.character + 1,
-        // rust-analyzer 有时给多行 message（如 `mismatched types\nexpected …`），
-        // 压缩成单行，保证摘要里每条诊断一行（对齐 verify 的 `--> file:line:col`）。
+        // rust-analyzer sometimes emits multi-line messages (e.g.
+        // `mismatched types\nexpected …`); collapse them to one line so each diagnostic is
+        // one line in the summary (aligned with verify's `--> file:line:col`).
         message: d.message.split_whitespace().collect::<Vec<_>>().join(" "),
         code,
     }
 }
 
-/// 从 `textDocument/publishDiagnostics` 的 params 提取 `(绝对路径, 诊断列表)`。
+/// Extract `(absolute path, diagnostic list)` from `textDocument/publishDiagnostics` params.
 ///
-/// 非 file 协议或反序列化失败返回 None（该消息被忽略）。
+/// Returns None for non-file schemes or deserialization failure (the message is ignored).
 pub fn parse_publish_diagnostics(params: &Value) -> Option<(PathBuf, Vec<DiagnosticEntry>)> {
     let p: PublishDiagnosticsParams = serde_json::from_value(params.clone()).ok()?;
     let path = path_from_uri(&p.uri)?;
@@ -280,22 +289,26 @@ pub fn parse_publish_diagnostics(params: &Value) -> Option<(PathBuf, Vec<Diagnos
     Some((path, entries))
 }
 
-// ---------------- 有状态客户端 ----------------
+// ---------------- Stateful client ----------------
 
-/// 发往 driver 线程的指令。
+/// Commands sent to the driver thread.
 enum LspCommand {
-    /// 打开/更新一个文件（didOpen 或 didChange，随后 didSave 触发 save-time 检查）。
-    Sync { path: PathBuf, content: String, language_id: String },
+    /// Open/update one file (didOpen or didChange, then didSave to trigger save-time checks).
+    Sync {
+        path: PathBuf,
+        content: String,
+        language_id: String,
+    },
 }
 
-/// 可观测状态：工具层读，driver 线程写。
+/// Observable state: read by the tool layer, written by the driver thread.
 #[derive(Default)]
 struct LspState {
     ready: bool,
     error: Option<String>,
 }
 
-/// LSP server 客户端句柄。克隆它共享同一进程 + 缓存。
+/// Handle to an LSP server client. Cloning it shares the same process and cache.
 pub struct LspClient {
     server_name: String,
     tx: Sender<LspCommand>,
@@ -307,12 +320,17 @@ pub struct LspClient {
 }
 
 impl LspClient {
-    /// 启动一个 LSP server 并完成后台握手。
+    /// Start one LSP server and complete the handshake in the background.
     ///
-    /// `command` 是 argv（第一个元素是二进制名，其余是参数）。永不 panic：spawn
-    /// 失败把错误记进 `state.error`，`health()` 会报告；`sync` / `snapshot` 变成
-    /// no-op / 空，工具层据此降级。`client_info` 随 initialize 握手上报客户端身份。
-    pub fn start(workspace_root: &Path, command: &[&str], client_info: ClientInfo) -> Arc<LspClient> {
+    /// `command` is the argv (first element is the binary name, the rest are args). Never
+    /// panics: a spawn failure records the error in `state.error`, which `health()` reports;
+    /// `sync` / `snapshot` become no-ops / empty, and the tool layer degrades accordingly.
+    /// `client_info` reports the client identity in the initialize handshake.
+    pub fn start(
+        workspace_root: &Path,
+        command: &[&str],
+        client_info: ClientInfo,
+    ) -> Arc<LspClient> {
         let server_name = command.first().copied().unwrap_or("lsp-server");
         let args = command.get(1..).unwrap_or(&[]);
 
@@ -355,7 +373,8 @@ impl LspClient {
             return client;
         };
 
-        // reader 线程：阻塞读 stdout，解帧，把 JSON 消息发给 driver。
+        // Reader thread: blocking reads from stdout, decodes frames, sends JSON messages to
+        // the driver.
         let (msg_tx, msg_rx) = mpsc::channel::<Value>();
         let reader = std::thread::spawn(move || {
             let mut buf: Vec<u8> = Vec::new();
@@ -363,7 +382,7 @@ impl LspClient {
             let mut stdout = stdout;
             loop {
                 match stdout.read(&mut chunk) {
-                    Ok(0) => break, // EOF：进程退出或管道关闭。
+                    Ok(0) => break, // EOF: process exited or pipe closed.
                     Ok(n) => buf.extend_from_slice(&chunk[..n]),
                     Err(_) => break,
                 }
@@ -371,28 +390,32 @@ impl LspClient {
                 buf.drain(..consumed);
                 for f in frames {
                     if msg_tx.send(f).is_err() {
-                        return; // driver 已退出。
+                        return; // Driver already exited.
                     }
                 }
             }
-            // EOF：显式 drop 发送端，让 driver 的 recv 收到 Disconnected。
+            // EOF: explicitly drop the sender so the driver's recv sees Disconnected.
             drop(msg_tx);
         });
 
-        // driver 线程：握手 + 处理 server 消息 + 消费 sync 指令。
+        // Driver thread: handshake + handling server messages + consuming sync commands.
         let workspace = workspace_root.to_path_buf();
         let diag = diagnostics.clone();
         let st = state.clone();
         let name = server_name.to_string();
         let driver = std::thread::spawn(move || {
-            // 1) initialize。
-            if stdin_write(&mut stdin, &build_initialize_request(1, &workspace, client_info))
-                .is_err()
+            // 1) initialize.
+            if stdin_write(
+                &mut stdin,
+                &build_initialize_request(1, &workspace, client_info),
+            )
+            .is_err()
             {
                 st.lock().unwrap().error = Some("failed to write initialize".into());
                 return;
             }
-            // 2) 等 initialize 响应（跳过头部的 window/logMessage 通知）。
+            // 2) Wait for the initialize response (skipping leading window/logMessage
+            // notifications).
             'init: loop {
                 match msg_rx.recv_timeout(INITIALIZE_TIMEOUT) {
                     Ok(msg) => {
@@ -404,7 +427,7 @@ impl LspClient {
                             }
                             break 'init;
                         }
-                        // 响应之前的其它消息（logMessage 等）忽略。
+                        // Ignore other pre-response messages (logMessage etc.).
                     }
                     Err(RecvTimeoutError::Timeout) => {
                         st.lock().unwrap().error =
@@ -412,24 +435,24 @@ impl LspClient {
                         return;
                     }
                     Err(RecvTimeoutError::Disconnected) => {
-                        st.lock().unwrap().error =
-                            Some(format!("{name} exited during handshake"));
+                        st.lock().unwrap().error = Some(format!("{name} exited during handshake"));
                         return;
                     }
                 }
             }
-            // 3) initialized。
+            // 3) initialized.
             if stdin_write(&mut stdin, &build_initialized_notification()).is_err() {
                 st.lock().unwrap().error = Some("failed to write initialized".into());
                 return;
             }
             st.lock().unwrap().ready = true;
 
-            // 已打开文件的版本号（driver 独占写）。
+            // Version numbers of open files (written exclusively by the driver).
             let mut open_versions: HashMap<PathBuf, i32> = HashMap::new();
 
             loop {
-                // 先消费 sync 指令（非阻塞，保证冷启动前累积的指令也被处理）。
+                // Drain sync commands first (non-blocking, so commands queued before
+                // startup are handled too).
                 loop {
                     match rx.try_recv() {
                         Ok(LspCommand::Sync {
@@ -455,20 +478,21 @@ impl LspClient {
                                     );
                                 }
                             }
-                            // didSave 触发 save-time 检查（如 rust-analyzer 的
-                            // checkOnSave → cargo check → publish）。
+                            // didSave triggers save-time checks (e.g. rust-analyzer's
+                            // checkOnSave → cargo check → publish).
                             let _ = stdin_write(&mut stdin, &build_did_save(&uri, &content));
                         }
                         Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => return, // client 已 drop。
+                        Err(TryRecvError::Disconnected) => return, // Client was dropped.
                     }
                 }
 
-                // 处理一条 server 消息（阻塞最多 100ms，好让 sync 指令插进来）。
+                // Handle one server message (block up to 100ms so sync commands can
+                // interleave).
                 match msg_rx.recv_timeout(Duration::from_millis(100)) {
                     Ok(msg) => handle_server_message(&msg, &diag, &mut stdin),
                     Err(RecvTimeoutError::Timeout) => continue,
-                    Err(RecvTimeoutError::Disconnected) => return, // rust-analyzer 退出。
+                    Err(RecvTimeoutError::Disconnected) => return, // rust-analyzer exited.
                 }
             }
         });
@@ -478,7 +502,8 @@ impl LspClient {
         client
     }
 
-    /// 报告当前是否可用。启动/握手失败返回错误，工具层据此降级。
+    /// Report whether the client is currently usable. Returns an error on startup/handshake
+    /// failure so the tool layer can degrade.
     pub fn health(&self) -> Result<(), String> {
         let st = self.state.lock().unwrap();
         if let Some(e) = &st.error {
@@ -490,12 +515,13 @@ impl LspClient {
         Ok(())
     }
 
-    /// 启动是否已经失败（区别于「还在握手」），供 `wait_ready` 判断。
+    /// Whether startup has already failed (as opposed to "still handshaking"), for
+    /// `wait_ready` to check.
     pub fn failed_error(&self) -> Option<String> {
         self.state.lock().unwrap().error.clone()
     }
 
-    /// 打开/更新一个文件的诊断（fire-and-forget，driver 线程消费）。
+    /// Request diagnostics for one file (fire-and-forget, consumed by the driver thread).
     pub fn sync(&self, path: &Path, content: &str, language_id: &str) {
         let _ = self.tx.send(LspCommand::Sync {
             path: path.to_path_buf(),
@@ -504,7 +530,7 @@ impl LspClient {
         });
     }
 
-    /// 快照当前诊断缓存（克隆，按路径排序）。
+    /// Snapshot the current diagnostics cache (cloned, sorted by path).
     pub fn snapshot(&self) -> Vec<(PathBuf, Vec<DiagnosticEntry>)> {
         let mut out: Vec<_> = self
             .diagnostics
@@ -520,8 +546,8 @@ impl LspClient {
 
 impl Drop for LspClient {
     fn drop(&mut self) {
-        // 先杀进程：reader 读到 EOF 退出 → 通道关闭 → driver 的 recv 收到
-        // Disconnected 退出。随后 join 两个线程收尾。
+        // Kill the process first: the reader hits EOF and exits → channel closes → the
+        // driver's recv sees Disconnected and exits. Then join both threads to finish up.
         if let Some(mut child) = self.child.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -535,25 +561,26 @@ impl Drop for LspClient {
     }
 }
 
-/// 处理一条来自 server 的消息：publishDiagnostics 进缓存，server→client 请求
-/// 一律回 result（`workspace/configuration` 回空数组），其余通知忽略。
+/// Handle one message from the server: publishDiagnostics goes into the cache, server→client
+/// requests always get a result (`workspace/configuration` gets an empty array), other
+/// notifications are ignored.
 fn handle_server_message(
     msg: &Value,
     diagnostics: &Arc<Mutex<HashMap<PathBuf, Vec<DiagnosticEntry>>>>,
     stdin: &mut ChildStdin,
 ) {
     let Some(method) = msg.get("method").and_then(Value::as_str) else {
-        return; // 响应消息（我们只在握手发过请求，此处无需处理）。
+        return; // Response message (we only send requests during the handshake; nothing to do here).
     };
 
     if method == PublishDiagnostics::METHOD {
-        if let Some(params) = msg.get("params") {
-            if let Some((path, entries)) = parse_publish_diagnostics(params) {
-                diagnostics.lock().unwrap().insert(path, entries);
-            }
+        if let Some(params) = msg.get("params")
+            && let Some((path, entries)) = parse_publish_diagnostics(params)
+        {
+            diagnostics.lock().unwrap().insert(path, entries);
         }
     } else if let Some(id) = msg.get("id") {
-        // server→client 请求（workspace/configuration、client/registerCapability 等）。
+        // Server→client requests (workspace/configuration, client/registerCapability, etc.).
         let result = if method == "workspace/configuration" {
             json!([])
         } else {
@@ -562,34 +589,37 @@ fn handle_server_message(
         let resp = json!({ "jsonrpc": "2.0", "id": id.clone(), "result": result });
         let _ = stdin_write(stdin, &resp);
     }
-    // 其余纯通知（window/logMessage、$/progress 等）忽略。
+    // Remaining pure notifications (window/logMessage, $/progress, etc.) are ignored.
 }
 
-/// 写一条消息到 server 的 stdin（driver 线程独占写）。
+/// Write one message to the server's stdin (written exclusively by the driver thread).
 fn stdin_write(stdin: &mut ChildStdin, msg: &Value) -> std::io::Result<()> {
     let framed = frame_message(msg);
     stdin.write_all(framed.as_bytes())?;
     stdin.flush()
 }
 
-// ---------------- 多 server 路由 ----------------
+// ---------------- Multi-server routing ----------------
 
-/// 惰性启动的 LSP server 集合，按文件语言路由。
+/// A lazily-started set of LSP servers, routed by file language.
 ///
-/// 路由规则（哪个路径用哪个 server）与客户端身份（`ClientInfo`）都在构造时
-/// 注入，code-intel 不绑定任何具体语言注册表。同一个 server 进程被解析到同一
-/// argv 首元素的所有文件共享（TS 和 JS 共用 typescript-language-server）。
-/// resolver 返回 `None` 的语言没有 server，工具层据此降级。
+/// Routing rules (which path uses which server) and the client identity (`ClientInfo`) are
+/// both injected at construction; code-intel binds to no concrete language registry. All
+/// files that resolve to the same argv first element share one server process (TS and JS
+/// share typescript-language-server). Languages for which the resolver returns `None` have
+/// no server, and the tool layer degrades accordingly.
 pub struct LspManager {
     workspace_root: PathBuf,
     client_info: ClientInfo,
     resolve: Box<SpecResolver>,
-    /// key = server 二进制名（首元素）：一个 server 进程被多门语言共享。
+    /// key = server binary name (first element): one server process shared by several
+    /// languages.
     clients: Mutex<HashMap<String, Arc<LspClient>>>,
 }
 
 impl LspManager {
-    /// 构造：注入 workspace 根、握手客户端身份、路径→server 规格解析器。
+    /// Construct: inject the workspace root, handshake client identity, and a
+    /// path→server-spec resolver.
     pub fn new(
         workspace_root: PathBuf,
         client_info: ClientInfo,
@@ -603,8 +633,8 @@ impl LspManager {
         }
     }
 
-    /// `path` 所属语言的 LspClient（惰性启动，进程共享）；注入的 resolver 对该
-    /// 路径返回 None 时返回 None。
+    /// The LspClient for `path`'s language (lazily started, process-shared); returns None
+    /// when the injected resolver returns None for the path.
     pub fn client_for(&self, path: &Path) -> Option<Arc<LspClient>> {
         let spec = (self.resolve)(path)?;
         let key = spec.command.first()?.clone();
@@ -635,11 +665,14 @@ mod tests {
 
     #[test]
     fn frame_message_uses_byte_length() {
-        // body 里的中文按字节计数（不是字符数）。
+        // The Chinese text in the body is counted in bytes (not characters).
         let body = json!({ "msg": "中文" });
         let framed = frame_message(&body);
         let body_len = serde_json::to_string(&body).unwrap().len();
-        assert!(framed.starts_with(&format!("Content-Length: {body_len}\r\n\r\n")), "{framed:?}");
+        assert!(
+            framed.starts_with(&format!("Content-Length: {body_len}\r\n\r\n")),
+            "{framed:?}"
+        );
     }
 
     #[test]
@@ -660,7 +693,7 @@ mod tests {
     fn decode_frames_handles_partial_body() {
         let full = frame_message(&json!({ "method": "hello" }));
         let bytes = full.as_bytes();
-        // 切掉 body 的一半。
+        // Cut off the tail of the body.
         let (frames, consumed) = decode_frames(&bytes[..bytes.len() - 3]);
         assert!(frames.is_empty());
         assert_eq!(consumed, 0, "incomplete body must not be consumed");
@@ -735,7 +768,8 @@ mod tests {
 
     #[test]
     fn client_info_flows_into_initialize_request() {
-        // 注入等价性:客户端身份来自构造参数,不再硬编码。
+        // Injection equivalence: the client identity comes from the constructor args,
+        // not hard-coded.
         let msg = build_initialize_request(
             1,
             Path::new("/tmp/ws"),
@@ -750,25 +784,25 @@ mod tests {
 
     #[test]
     fn manager_routes_through_injected_resolver() {
-        // 注入等价性:路由由 resolver 决定。返回 None 的语言拿不到 client
-        //(且不 spawn);返回假二进制名的语言 spawn 失败被记进 health(优雅降级),
-        // 全程不 panic、不依赖真实 LSP server。
-        let mgr = LspManager::new(
-            PathBuf::from("/tmp/ws"),
-            test_client_info(),
-            |p: &Path| {
-                if p.extension().and_then(|e| e.to_str()) == Some("rs") {
-                    Some(LspServerSpec {
-                        command: vec!["definitely-not-a-real-lsp-binary".to_string()],
-                    })
-                } else {
-                    None
-                }
-            },
-        );
+        // Injection equivalence: routing is decided by the resolver. A language returning
+        // None gets no client (and no spawn); a language returning a fake binary name gets a
+        // spawn failure recorded in health (graceful degradation). No panics anywhere, and no
+        // dependency on a real LSP server.
+        let mgr = LspManager::new(PathBuf::from("/tmp/ws"), test_client_info(), |p: &Path| {
+            if p.extension().and_then(|e| e.to_str()) == Some("rs") {
+                Some(LspServerSpec {
+                    command: vec!["definitely-not-a-real-lsp-binary".to_string()],
+                })
+            } else {
+                None
+            }
+        });
         assert!(mgr.client_for(Path::new("/tmp/x/py.py")).is_none());
         let client = mgr.client_for(Path::new("/tmp/x/a.rs")).unwrap();
-        assert!(client.health().is_err(), "spawn failure must surface in health()");
+        assert!(
+            client.health().is_err(),
+            "spawn failure must surface in health()"
+        );
         assert!(client.failed_error().is_some());
         assert!(client.snapshot().is_empty());
     }

@@ -57,7 +57,10 @@ mod tests {
     fn excludes_are_explicit_negation_globs() {
         let mut cmd = std::process::Command::new("rg");
         apply_common_excludes(&mut cmd);
-        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             args,
             vec![

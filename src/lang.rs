@@ -1,7 +1,6 @@
 //! Language registry: the single source of truth for per-language knowledge.
 //!
-//! The multi-language architecture is "注册制 + 通用兜底" (registry + generic
-//! fallback):
+//! The multi-language architecture is a "registry + generic fallback":
 //!
 //! - The **fallback** layer is language-agnostic — file listing, ripgrep, running
 //!   any build command, and showing a raw stderr tail — so *any* language is
@@ -97,7 +96,9 @@ const MAX_SCAN_FILES: usize = 2000;
 /// The language whose extensions include `path`'s extension, if any.
 pub fn language_for_path(path: &str) -> Option<&'static LanguageSpec> {
     let ext = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
-    LANGUAGES.iter().find(|l| l.extensions.contains(&ext.as_str()))
+    LANGUAGES
+        .iter()
+        .find(|l| l.extensions.contains(&ext.as_str()))
 }
 
 /// LSP `languageId` for a path (per-extension, so finer than the language group:
@@ -190,8 +191,18 @@ mod tests {
         assert!(language_for_path("b.tsx").is_some());
         assert!(language_for_path("c.js").is_some());
         assert!(language_for_path("d.mjs").is_some());
-        assert!(language_for_path("e.cpp").unwrap().extensions.contains(&"cpp"));
-        assert!(language_for_path("f.hpp").unwrap().extensions.contains(&"hpp"));
+        assert!(
+            language_for_path("e.cpp")
+                .unwrap()
+                .extensions
+                .contains(&"cpp")
+        );
+        assert!(
+            language_for_path("f.hpp")
+                .unwrap()
+                .extensions
+                .contains(&"hpp")
+        );
         assert!(language_for_path("g.h").unwrap().extensions.contains(&"h"));
         assert!(language_for_path("README.md").is_none());
         assert!(language_for_path("src/").is_none());
@@ -251,7 +262,10 @@ mod tests {
 
     #[test]
     fn lsp_spec_for_path_routes_to_server() {
-        assert_eq!(lsp_spec_for_path("a.rs").unwrap().command[0], "rust-analyzer");
+        assert_eq!(
+            lsp_spec_for_path("a.rs").unwrap().command[0],
+            "rust-analyzer"
+        );
         assert_eq!(
             lsp_spec_for_path("a.ts").unwrap().command[0],
             "typescript-language-server"

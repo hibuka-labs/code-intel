@@ -30,7 +30,11 @@ fn sample_workspace(tag: &str) -> PathBuf {
         "package com.x.web;\npublic class Handler {\n    public void handle() {}\n}\n",
     )
     .unwrap();
-    std::fs::write(root.join("src/widget.ts"), "export class Widget {\n  draw(): void {}\n}\n").unwrap();
+    std::fs::write(
+        root.join("src/widget.ts"),
+        "export class Widget {\n  draw(): void {}\n}\n",
+    )
+    .unwrap();
     std::fs::write(root.join("README.md"), "not code\n").unwrap();
     std::fs::write(root.join("target/debug/junk.rs"), "fn generated() {}\n").unwrap();
     root
@@ -42,7 +46,10 @@ fn language_detection_and_repo_map_end_to_end() {
 
     // Registry detection: Rust + Java + TS present, in priority order.
     let langs = detect_languages(&root);
-    let exts: Vec<&str> = langs.iter().flat_map(|l| l.extensions.iter().copied()).collect();
+    let exts: Vec<&str> = langs
+        .iter()
+        .flat_map(|l| l.extensions.iter().copied())
+        .collect();
     assert!(exts.contains(&"rs"), "{exts:?}");
     assert!(exts.contains(&"java"), "{exts:?}");
     assert!(exts.contains(&"ts"), "{exts:?}");
@@ -53,7 +60,10 @@ fn language_detection_and_repo_map_end_to_end() {
     assert!(map.contains("fn greet"), "{map}");
     assert!(map.contains("Handler.java"), "{map}");
     assert!(map.contains("class Handler"), "{map}");
-    assert!(!map.contains("target/"), "build output must be excluded:\n{map}");
+    assert!(
+        !map.contains("target/"),
+        "build output must be excluded:\n{map}"
+    );
 
     // Directory skeleton: two modules, package tree under each.
     let tree = build_dir_tree(&root, None).unwrap();
@@ -67,7 +77,10 @@ fn language_detection_and_repo_map_end_to_end() {
     assert!(hits.contains("src/greet.rs"), "{hits}");
     assert!(hits.contains("fn greet"), "{hits}");
     let no_gen = search(&root, "fn generated", None, 20).unwrap();
-    assert!(!no_gen.contains("target/"), "search must skip target/: {no_gen}");
+    assert!(
+        !no_gen.contains("target/"),
+        "search must skip target/: {no_gen}"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -80,7 +93,10 @@ fn workspace_path_validation_round_trip() {
     assert_eq!(scope, "src");
     let map = build_repo_map(&root, Some("src")).unwrap();
     assert!(map.contains("greet.rs"), "{map}");
-    assert!(!map.contains("Handler.java"), "scope must exclude other modules:\n{map}");
+    assert!(
+        !map.contains("Handler.java"),
+        "scope must exclude other modules:\n{map}"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -89,14 +105,24 @@ fn lsp_manager_uses_injected_resolver_not_registry() {
     // The registry alone must NOT decide routing: an empty resolver yields no
     // clients even though the workspace is full of registry-known languages.
     let root = sample_workspace("lsp_none");
-    let none_mgr = LspManager::new(root.clone(), ClientInfo { name: "test".into(), version: None }, |_| None);
+    let none_mgr = LspManager::new(
+        root.clone(),
+        ClientInfo {
+            name: "test".into(),
+            version: None,
+        },
+        |_| None,
+    );
     assert!(none_mgr.client_for(&root.join("src/greet.rs")).is_none());
 
     // A resolver can route any way it likes (here: everything to a fake server);
     // spawn failure surfaces as a health error instead of a panic.
     let fake_mgr = LspManager::new(
         root.clone(),
-        ClientInfo { name: "test".into(), version: None },
+        ClientInfo {
+            name: "test".into(),
+            version: None,
+        },
         |_p: &_| {
             Some(LspServerSpec {
                 command: vec!["definitely-not-a-real-lsp-binary".to_string()],
@@ -115,7 +141,10 @@ fn registry_and_resolver_agree_for_known_languages() {
     let root = sample_workspace("lsp_registry");
     let mgr = LspManager::new(
         root.clone(),
-        ClientInfo { name: "test".into(), version: None },
+        ClientInfo {
+            name: "test".into(),
+            version: None,
+        },
         |p: &_| {
             lsp_spec_for_path(&p.to_string_lossy()).map(|spec| LspServerSpec {
                 command: spec.command.iter().map(|s| s.to_string()).collect(),
@@ -125,11 +154,14 @@ fn registry_and_resolver_agree_for_known_languages() {
     // We don't require rust-analyzer to be installed here; instead confirm the
     // resolver's routing decision mirrors the registry for a Java file (registry
     // says None) and resolves *something* only for registry-backed languages.
-    assert!(mgr.client_for(&root.join("app/src/main/java/com/x/web/Handler.java")).is_none());
+    assert!(
+        mgr.client_for(&root.join("app/src/main/java/com/x/web/Handler.java"))
+            .is_none()
+    );
     let client = mgr.client_for(&root.join("src/greet.rs"));
-    if client.is_some() {
+    if let Some(client) = client {
         // rust-analyzer is installed: the client is either starting or ready.
-        let _ = client.unwrap().health();
+        let _ = client.health();
     } else {
         // Not installed: spawn failed, which is fine for this equivalence check —
         // the decision was still routed through the resolver.
@@ -146,6 +178,12 @@ fn registry_and_resolver_agree_for_known_languages() {
 fn rg_is_available_for_search_backed_features() {
     // search/repomap shell out to ripgrep; fail loudly here if the environment
     // lacks it (CI prerequisite), with a readable message.
-    let ok = Command::new("rg").arg("--version").output().map(|o| o.status.success());
-    assert!(ok.unwrap_or(false), "ripgrep (`rg`) must be on PATH for code-intel tests");
+    let ok = Command::new("rg")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success());
+    assert!(
+        ok.unwrap_or(false),
+        "ripgrep (`rg`) must be on PATH for code-intel tests"
+    );
 }

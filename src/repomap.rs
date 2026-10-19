@@ -300,7 +300,10 @@ fn is_class_body(kind: &str) -> bool {
 fn is_transparent_wrapper(kind: &str) -> bool {
     matches!(kind, "export_statement" | "template_declaration")
         || kind.ends_with("_body")
-        || matches!(kind, "field_declaration_list" | "declaration_list" | "enumerator_list")
+        || matches!(
+            kind,
+            "field_declaration_list" | "declaration_list" | "enumerator_list"
+        )
 }
 
 /// Recursively collect symbols from a node's children.
@@ -545,7 +548,11 @@ pub fn build_dir_tree(root: &Path, scope: Option<&str>) -> Result<String, String
         out.push('\n');
     }
 
-    let module_label = if modules.len() == 1 { "module" } else { "modules" };
+    let module_label = if modules.len() == 1 {
+        "module"
+    } else {
+        "modules"
+    };
     let file_label = if files.len() == 1 { "file" } else { "files" };
     let result = format!(
         "Repository layout ({} {module_label}, {} {file_label}):\n\n{out}",
@@ -589,15 +596,27 @@ mod tests {
         // crate maps its own src/.
         let map = build_repo_map(&crate_root(), Some("src")).unwrap();
         assert!(map.contains("repomap.rs"), "should list repomap.rs:\n{map}");
-        assert!(map.contains("fn build_repo_map"), "should extract fn signature:\n{map}");
-        assert!(map.contains("fn search"), "should extract fn signature:\n{map}");
-        assert!(!map.contains("target/"), "must not map build output:\n{map}");
+        assert!(
+            map.contains("fn build_repo_map"),
+            "should extract fn signature:\n{map}"
+        );
+        assert!(
+            map.contains("fn search"),
+            "should extract fn signature:\n{map}"
+        );
+        assert!(
+            !map.contains("target/"),
+            "must not map build output:\n{map}"
+        );
     }
 
     #[test]
     fn build_repo_map_scopes_to_subdir() {
         let map = build_repo_map(&crate_root(), Some("src")).unwrap();
-        assert!(map.contains("ripgrep.rs"), "subdir map should list ripgrep.rs:\n{map}");
+        assert!(
+            map.contains("ripgrep.rs"),
+            "subdir map should list ripgrep.rs:\n{map}"
+        );
     }
 
     #[test]

@@ -1,8 +1,10 @@
-//! Diagnostics formatting: LSP 诊断缓存 → `verify` 风格摘要。
+//! Diagnostics formatting: LSP diagnostics cache → `verify`-style summary.
 //!
-//! 与跑编译命令的 verify 门互补：读各语言 LSP server 的 `publishDiagnostics`
-//! 缓存，边写边报错。输出 `file:line:col  code  message` 摘要，agent 无需读
-//! 原始编译输出。这里只有纯格式化与文件收集；server 进程与缓存见 [`crate::lsp`]。
+//! Complements the verify gate that runs build commands: reads each language's LSP server
+//! `publishDiagnostics` cache and reports errors as you write. Emits a
+//! `file:line:col  code  message` summary so the agent never needs to read raw compiler
+//! output. Only pure formatting and file collection live here; server processes and the
+//! cache are in [`crate::lsp`].
 
 use std::path::{Path, PathBuf};
 
@@ -10,14 +12,15 @@ use crate::lang;
 use crate::lsp::{DiagnosticEntry, Severity};
 use crate::walk::validate_workspace_path;
 
-/// 摘要截断上限（对齐 verify 门的摘要预算）。
+/// Summary truncation cap (aligned with the verify gate's summary budget).
 const MAX_SUMMARY_CHARS: usize = 4000;
 
-/// 收集要诊断的源码文件（任意已注册语言）。
+/// Collect source files to diagnose (any registered language).
 ///
-/// `path`（可选，workspace 相对）收敛到单个文件或目录；省略则扫整个 workspace，
-/// 跳过 build 产物（`lang::SKIP_DIRS`）与隐藏目录。返回 `(文件列表, 范围基准路径)`，
-/// 范围用于最后过滤诊断快照。
+/// `path` (optional, workspace-relative) narrows the scope to a single file or directory;
+/// omitting it scans the whole workspace, skipping build artifacts (`lang::SKIP_DIRS`) and
+/// hidden directories. Returns `(file list, scope base path)`; the scope is used to filter
+/// the diagnostics snapshot at the end.
 pub fn collect_code_files(
     root: &Path,
     path: Option<&str>,
@@ -43,7 +46,8 @@ pub fn collect_code_files(
     Ok((files, scope))
 }
 
-/// 递归收集已注册语言的源码文件，跳过 build 产物与隐藏目录。
+/// Recursively collect source files of registered languages, skipping build artifacts and
+/// hidden directories.
 fn walk_code_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -66,11 +70,12 @@ fn walk_code_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// 把诊断缓存格式化成 `verify` 风格的摘要。
+/// Format the diagnostics cache into a `verify`-style summary.
 ///
-/// 路径以 workspace 相对形式呈现；只保留 error / warning（rust-analyzer 还会发
-/// hint/info，如「expected due to this」，对「编不过」无意义，舍弃）；无 error/warning
-/// 时返回单行「无诊断」。
+/// Paths are presented workspace-relative; only error / warning are kept (rust-analyzer
+/// also emits hint/info, e.g. "expected due to this", which is meaningless for "does it
+/// compile", so they are dropped); with no error/warning a single "no diagnostics" line is
+/// returned.
 pub fn format_diagnostics(entries: &[(PathBuf, Vec<DiagnosticEntry>)], root: &Path) -> String {
     let mut lines = Vec::new();
     let (mut errors, mut warnings) = (0usize, 0usize);
@@ -78,7 +83,10 @@ pub fn format_diagnostics(entries: &[(PathBuf, Vec<DiagnosticEntry>)], root: &Pa
     for (file, diags) in entries {
         let rel = file.strip_prefix(root).unwrap_or(file);
         for d in diags {
-            let code = d.code.clone().unwrap_or_else(|| d.severity.label().to_string());
+            let code = d
+                .code
+                .clone()
+                .unwrap_or_else(|| d.severity.label().to_string());
             match d.severity {
                 Severity::Error => {
                     errors += 1;
@@ -140,7 +148,13 @@ pub fn format_diagnostics(entries: &[(PathBuf, Vec<DiagnosticEntry>)], root: &Pa
 mod tests {
     use super::*;
 
-    fn entry(severity: Severity, line: u32, column: u32, code: Option<&str>, message: &str) -> DiagnosticEntry {
+    fn entry(
+        severity: Severity,
+        line: u32,
+        column: u32,
+        code: Option<&str>,
+        message: &str,
+    ) -> DiagnosticEntry {
         DiagnosticEntry {
             severity,
             line,
@@ -168,13 +182,22 @@ mod tests {
             ),
             (
                 PathBuf::from("/ws/src/lib.rs"),
-                vec![entry(Severity::Error, 1, 1, Some("E0308"), "mismatched types")],
+                vec![entry(
+                    Severity::Error,
+                    1,
+                    1,
+                    Some("E0308"),
+                    "mismatched types",
+                )],
             ),
         ];
         let s = format_diagnostics(&entries, Path::new("/ws"));
         assert!(s.starts_with("2 error(s), 1 warning(s):"), "{s}");
         assert!(s.contains("src/main.rs:3:5  E0425  unresolved name"), "{s}");
-        assert!(s.contains("src/main.rs:7:1  warning  unused variable"), "{s}");
+        assert!(
+            s.contains("src/main.rs:7:1  warning  unused variable"),
+            "{s}"
+        );
         assert!(s.contains("src/lib.rs:1:1  E0308  mismatched types"), "{s}");
     }
 
@@ -195,7 +218,10 @@ mod tests {
                 lang::language_for_path(&f.to_string_lossy()).is_some(),
                 "only registered source files: {f:?}"
             );
-            assert!(!f.to_string_lossy().contains("/target/"), "must skip target: {f:?}");
+            assert!(
+                !f.to_string_lossy().contains("/target/"),
+                "must skip target: {f:?}"
+            );
         }
     }
 

@@ -82,7 +82,10 @@ fn main() {
         std::thread::sleep(Duration::from_millis(500));
         let snapshot: Vec<_> = clients.iter().flat_map(|c| c.snapshot()).collect();
         filtered = match &scope {
-            Some(sp) => snapshot.into_iter().filter(|(p, _)| p.starts_with(sp)).collect(),
+            Some(sp) => snapshot
+                .into_iter()
+                .filter(|(p, _)| p.starts_with(sp))
+                .collect(),
             None => snapshot,
         };
         if filtered.iter().any(|(_, d)| !d.is_empty()) || Instant::now() >= deadline {
@@ -100,7 +103,9 @@ fn main() {
 fn wait_ready(clients: &[Arc<code_intel::lsp::LspClient>]) {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
-        if clients.iter().all(|c| c.health().is_ok()) || clients.iter().any(|c| c.failed_error().is_some()) {
+        if clients.iter().all(|c| c.health().is_ok())
+            || clients.iter().any(|c| c.failed_error().is_some())
+        {
             return;
         }
         std::thread::sleep(Duration::from_millis(100));
