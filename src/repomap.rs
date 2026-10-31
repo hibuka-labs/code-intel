@@ -387,7 +387,13 @@ pub fn build_repo_map(root: &Path, scope: Option<&str>) -> Result<String, String
             if file_count > 0 {
                 out.push('\n');
             }
-            out.push_str(&format!("{file}\n"));
+            // The size rides with the outline: whole-file vs targeted reads is
+            // decided from this call alone, no separate size pass. Text lines
+            // (a trailing newline is not an extra line).
+            let line_count = source.iter().filter(|&&b| b == b'\n').count()
+                + usize::from(!source.ends_with(b"\n") && !source.is_empty());
+            let unit = if line_count == 1 { "line" } else { "lines" };
+            out.push_str(&format!("{file} ({line_count} {unit})\n"));
             out.push_str(&symbols.join("\n"));
             out.push('\n');
             file_count += 1;
@@ -616,6 +622,33 @@ mod tests {
         assert!(
             map.contains("ripgrep.rs"),
             "subdir map should list ripgrep.rs:\n{map}"
+        );
+    }
+
+    #[test]
+    fn build_repo_map_reports_line_counts_on_the_file_header() {
+        // The size rides with the outline, so "whole file or targeted reads" is
+        // decided from this call alone. A trailing newline is not a line.
+        let map = map_of_temp_files(
+            "sizes",
+            &[(
+                "Foo.java",
+                "class Foo {\n  int bar(int x) { return x; }\n}\n",
+            )],
+        );
+        assert!(
+            map.contains("Foo.java (3 lines)"),
+            "header must carry the size:\n{map}"
+        );
+    }
+
+    #[test]
+    fn build_repo_map_counts_text_lines_not_newlines() {
+        // 3 text lines, only 2 newline bytes: the count must be the lines.
+        let map = map_of_temp_files("sizes_no_nl", &[("Bar.java", "class Bar {\n  int x;\n}")]);
+        assert!(
+            map.contains("Bar.java (3 lines)"),
+            "no trailing newline must not cost a line:\n{map}"
         );
     }
 
