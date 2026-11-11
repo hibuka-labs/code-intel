@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `verify`: compiler output parsing — `error_count` / `warning_count` plus a
+  truncated summary, with the parser chosen by the command (`rustc` / `tsc` /
+  `javac` / `gcc`). **Advisory only**: the verdict for a verify run is the
+  process exit code, never the parsed counts.
+- `lang`: `LanguageSpec::verify_command` — the per-language default — and
+  `verify_command_for`, the single-file lookup used for hints.
+- `lang`: `resolve_verify_command` — the workspace's compile-level
+  verification command, resolved with **zero configuration**: `.phimint.toml`
+  → a slot the project already fills in (Cargo `[workspace]`, Gradle wrapper,
+  `package.json` scripts, Makefile `check` target) → the language table. The
+  answer carries the source it came from, so a reader can tell "it ran your
+  build" from "it ran a guess". No human is asked to configure anything and
+  no model is consulted — a command the model could pick is a green light it
+  could mint. The table is anchored to a build manifest **in the workspace
+  root**: a command derived from the source files present cannot be run at a
+  root that offers no entry point to run it against.
+
 ## [0.1.0] - 2026-09-06
 
 ### Added

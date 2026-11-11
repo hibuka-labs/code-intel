@@ -15,6 +15,9 @@
 //!   structural map (per-file symbols) and a module → package directory
 //!   skeleton for large workspaces.
 //! - [`ripgrep`] — thin wrapper over `rg --json` for content search.
+//! - [`verify`] — compiler output parsing for the verify gate: turning a
+//!   toolchain's stderr into error/warning counts and a terse summary. Counts
+//!   are for the reader; the **exit code is the verdict**.
 //! - [`walk`] — shared path/exclusion helpers (`rg` glob excludes, user-path
 //!   validation).
 //!
@@ -54,6 +57,7 @@
 
 pub mod lang;
 pub mod ripgrep;
+pub mod verify;
 pub mod walk;
 
 #[cfg(feature = "lsp")]

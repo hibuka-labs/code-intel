@@ -607,12 +607,18 @@ mod tests {
             "should extract fn signature:\n{map}"
         );
         assert!(
-            map.contains("fn search"),
-            "should extract fn signature:\n{map}"
-        );
-        assert!(
             !map.contains("target/"),
             "must not map build output:\n{map}"
+        );
+
+        // `fn search` lives in `ripgrep.rs`, the last file alphabetically — it
+        // is the first thing `MAX_OUTPUT_CHARS` cuts off as `src/` grows. Assert
+        // it against its own scope so the test measures extraction, not the
+        // truncation order of a whole-tree map.
+        let map = build_repo_map(&crate_root(), Some("src/ripgrep.rs")).unwrap();
+        assert!(
+            map.contains("fn search"),
+            "should extract fn signature:\n{map}"
         );
     }
 
