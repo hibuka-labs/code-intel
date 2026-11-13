@@ -333,6 +333,9 @@ src/c.ts(1,1): warning TS6133: 'x' is declared but never used.
         // The router must not send tsc output to the rustc parser and silently
         // report zero errors.
         let out = parse_errors("npx tsc --noEmit", "src/a.ts(1,1): error TS1: boom\n");
-        assert_eq!(out.error_count, 1, "tsc output must route to the tsc parser");
+        assert_eq!(
+            out.error_count, 1,
+            "tsc output must route to the tsc parser"
+        );
     }
 }

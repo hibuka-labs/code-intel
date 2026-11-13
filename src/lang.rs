@@ -199,13 +199,13 @@ pub fn verify_command_for(path: &str) -> Option<&'static str> {
 pub fn table_verify_command(root: &Path) -> Option<&'static str> {
     for spec in LANGUAGES {
         for manifest in spec.manifests {
-            if root.join(manifest).is_file() {
-                if let Some(cmd) = spec.verify_command {
-                    return Some(cmd);
-                }
-                // A manifest for a language with no compile layer: keep looking.
-                // A JS `package.json` should not mask a `Cargo.toml` sitting next
-                // to it, and it must not produce a fake green either.
+            // A manifest for a language with no compile layer: keep looking.
+            // A JS `package.json` should not mask a `Cargo.toml` sitting next
+            // to it, and it must not produce a fake green either.
+            if root.join(manifest).is_file()
+                && let Some(cmd) = spec.verify_command
+            {
+                return Some(cmd);
             }
         }
     }
@@ -275,8 +275,7 @@ pub fn resolve_verify_command(root: &Path) -> Option<VerifyCommand> {
                 .map(|c| (c, VerifyCommandSource::ProjectConvention))
         })
         .or_else(|| {
-            table_verify_command(root)
-                .map(|c| (c.to_string(), VerifyCommandSource::LanguageTable))
+            table_verify_command(root).map(|c| (c.to_string(), VerifyCommandSource::LanguageTable))
         })?;
     Some(VerifyCommand { command, source })
 }
@@ -689,7 +688,10 @@ mod tests {
     fn a_quoted_config_value_keeps_its_hash() {
         assert_eq!(config_value("\"make # all\""), Some("make # all"));
         assert_eq!(config_value("'make check'"), Some("make check"));
-        assert_eq!(config_value("make check  # the real one"), Some("make check"));
+        assert_eq!(
+            config_value("make check  # the real one"),
+            Some("make check")
+        );
         assert_eq!(config_value("   "), None);
     }
 
@@ -799,10 +801,7 @@ mod tests {
 
         let root = scratch("code_intel_verify_make");
         std::fs::write(root.join("Makefile"), ".PHONY: check\ncheck: build\n").unwrap();
-        assert_eq!(
-            resolve_verify_command(&root).unwrap().command,
-            "make check"
-        );
+        assert_eq!(resolve_verify_command(&root).unwrap().command, "make check");
 
         std::fs::write(root.join("Makefile"), "all:\n\techo hi\n").unwrap();
         assert_eq!(resolve_verify_command(&root).unwrap().command, "make");
