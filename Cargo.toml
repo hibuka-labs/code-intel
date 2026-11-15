@@ -38,6 +38,9 @@ tree-sitter-cpp = { version = "0.23", optional = true }
 tree-sitter-python = { version = "0.23", optional = true }
 serde_json = "1"
 tracing = "0.1"
+# Both walks (repo map + content search) run in-process: no `rg` binary needed.
+ignore = "0.4"
+regex = "1"
 
 [dev-dependencies]
 tempfile = "3"

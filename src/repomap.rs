@@ -17,10 +17,9 @@
 //! map is too large to fit a multi-module project.
 
 use std::path::Path;
-use std::process::Stdio;
 
 use crate::lang::language_for_path;
-use crate::walk::{apply_common_excludes, validate_workspace_path};
+use crate::walk::{is_excluded, relative_path, validate_workspace_path};
 
 const MAX_FILES: usize = 200;
 const MAX_SYMBOLS_PER_FILE: usize = 100;
@@ -34,28 +33,31 @@ const MAX_DIR_TREE_CHARS: usize = 9000;
 /// is depth 0; class bodies are depth 1 (their members), and we stop there.
 const MAX_DEPTH: u8 = 1;
 
-/// List source files of any registered language (workspace-relative, respects
-/// `.gitignore`) via `rg --files`, filtered to known extensions in Rust.
+/// List source files of any registered language (workspace-relative, `/`-separated
+/// paths, respects `.gitignore`), filtered to known extensions in Rust.
+///
+/// Walks in-process with `ignore` instead of shelling out to `rg --files`: the
+/// tool has to work where ripgrep is not installed, and every child process
+/// costs 60 ms+ on Windows. The filter mirrors the previous invocation —
+/// `target/` and `node_modules/` at the top level stay out, and so do hidden
+/// entries.
 fn list_code_files(root: &Path, scope: &str) -> Result<Vec<String>, String> {
-    let mut cmd = std::process::Command::new("rg");
-    cmd.arg("--files");
-    apply_common_excludes(&mut cmd);
-    cmd.arg(scope)
-        .current_dir(root)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let output = cmd
-        .output()
-        .map_err(|e| format!("failed to run `rg --files`: {e}"))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut files: Vec<String> = stdout
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .filter(|l| language_for_path(l).is_some())
-        .collect();
+    let base = root.join(scope);
+    let mut files: Vec<String> = Vec::new();
+    for entry in ignore::WalkBuilder::new(&base).build() {
+        // One unreadable directory must not abort the whole map: skip the entry.
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let rel = relative_path(root, entry.path());
+        if is_excluded(&rel) {
+            continue;
+        }
+        if language_for_path(&rel).is_some() {
+            files.push(rel);
+        }
+    }
     files.sort();
     Ok(files)
 }

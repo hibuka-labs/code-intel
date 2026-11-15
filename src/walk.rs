@@ -1,4 +1,5 @@
-//! Shared file-walk helpers: user-path validation and `rg` glob excludes.
+//! Shared file-walk helpers: user-path validation and the filters both tools
+//! apply when they walk a workspace in-process.
 
 use std::path::Path;
 
@@ -6,10 +7,9 @@ use std::path::Path;
 ///
 /// There is no workspace sandbox: absolute paths and `..` traversal are allowed,
 /// matching the framework file tools and Claude Code's model — safety comes from
-/// the approval layer (`auto`/`ask`/`deny`), not path boundaries. Callers may
-/// pass the result to `rg` (with `current_dir` set to the workspace root) or to
-/// `root.join(..)`; both treat an absolute path as absolute and a `..` path as
-/// escaping the root. Only the empty path is rejected.
+/// the approval layer (`auto`/`ask`/`deny`), not path boundaries. Callers pass
+/// the result to `root.join(..)`, which treats an absolute path as absolute and
+/// a `..` path as escaping the root. Only the empty path is rejected.
 pub fn validate_workspace_path(_root: &Path, user_path: &str) -> Result<String, String> {
     let trimmed = user_path.trim();
     if trimmed.is_empty() {
@@ -18,16 +18,25 @@ pub fn validate_workspace_path(_root: &Path, user_path: &str) -> Result<String, 
     Ok(trimmed.to_string())
 }
 
-/// Apply the exclusions shared by both tools (build output, vendored deps).
+/// Workspace-relative, `/`-separated form of `path`.
 ///
-/// These are explicit `--glob` negations rather than relying on `.gitignore`:
-/// ripgrep only honors `.gitignore` inside a git repository, but a coding agent
-/// often runs on a bare directory (like a temp smoke workspace), where
-/// `target/` etc. must still be ignored.
-pub fn apply_common_excludes(cmd: &mut std::process::Command) {
-    for glob in ["!target/**", "!node_modules/**"] {
-        cmd.arg("--glob").arg(glob);
-    }
+/// Results are formatted as `file:line: ...` and their consumers split on `/`,
+/// so the walker's platform separators are normalised here. A path outside the
+/// root (an absolute `scope`) is kept as given.
+pub(crate) fn relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Whether `rel` lives under build output or vendored dependencies.
+///
+/// `target/` and `node_modules/` must stay out even in a bare directory with no
+/// `.gitignore` — a coding agent often runs on a temp workspace. The check is
+/// on the top-level component, matching the previous `!target/**` globs.
+pub(crate) fn is_excluded(rel: &str) -> bool {
+    matches!(rel.split('/').next(), Some("target" | "node_modules"))
 }
 
 #[cfg(test)]
@@ -54,21 +63,14 @@ mod tests {
     }
 
     #[test]
-    fn excludes_are_explicit_negation_globs() {
-        let mut cmd = std::process::Command::new("rg");
-        apply_common_excludes(&mut cmd);
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            args,
-            vec![
-                "--glob".to_string(),
-                "!target/**".to_string(),
-                "--glob".to_string(),
-                "!node_modules/**".to_string()
-            ]
-        );
+    fn relative_paths_use_forward_slashes_and_exclude_build_output() {
+        let root = Path::new("/ws");
+        assert_eq!(relative_path(root, Path::new("/ws/src/lib.rs")), "src/lib.rs");
+        // Absolute scopes stay absolute.
+        assert_eq!(relative_path(root, Path::new("/elsewhere/a.rs")), "/elsewhere/a.rs");
+        assert!(is_excluded("target/debug/build.rs"));
+        assert!(is_excluded("node_modules/pkg/index.js"));
+        assert!(!is_excluded("crates/foo/target/x.rs"));
+        assert!(!is_excluded("src/main.rs"));
     }
 }
