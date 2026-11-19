@@ -8,7 +8,7 @@ ripgrep 内容搜索、语言注册表——全部是围绕 `Path`/`&str` 的普
 [phimint](https://github.com/hibuka-labs) 中沉淀而来。
 
 [![Crates.io](https://img.shields.io/crates/v/code-intel.svg)](https://crates.io/crates/code-intel)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
 ## 能力一览
 
@@ -79,4 +79,4 @@ let files = code_intel::diagnostics::collect_code_files(&root, None)?;
 
 ## 许可证
 
-MIT — 见 [LICENSE](LICENSE)。
+MIT OR Apache-2.0 — 见 [LICENSE-MIT](LICENSE-MIT) 与 [LICENSE-APACHE](LICENSE-APACHE)。

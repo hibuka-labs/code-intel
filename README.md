@@ -8,7 +8,7 @@ Part of the [buka-works](https://github.com/hibuka-labs) family; extracted from
 the [phimint](https://github.com/hibuka-labs) coding agent.
 
 [![Crates.io](https://img.shields.io/crates/v/code-intel.svg)](https://crates.io/crates/code-intel)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
 ## Capabilities
 
@@ -79,4 +79,4 @@ Run the live demo: `cargo run --example diagnostics-demo`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT OR Apache-2.0 — see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
