@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ── Test on every release platform ──
+  # The OS matrix is the platform compile+run check: platform-only breaks
+  # used to reach users because CI ran Linux alone (family incidents:
+  # USERPROFILE audit bug 2026-11-22; phimint 0.7.0 windows build).
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # No ripgrep here: both walks (repo map + content search) run in-process
+      # since 0.1.3, so there is no `rg` binary to install.
+      - name: Run tests
+        run: cargo test
+
+  platform-gate:
+    name: platform primitive gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: no hand-rolled HOME/USERPROFILE lookups
+        run: |
+          if grep -rnE --include='*.rs' --exclude-dir=target --exclude-dir=.git 'env::var(_os)?\("(HOME|USERPROFILE)"\)' .; then
+            echo "Banned: use the repo home-dir helper (dirs::home_dir() or the local throat) instead of raw HOME/USERPROFILE env lookups."
+            exit 1
+          fi
