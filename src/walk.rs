@@ -65,9 +65,15 @@ mod tests {
     #[test]
     fn relative_paths_use_forward_slashes_and_exclude_build_output() {
         let root = Path::new("/ws");
-        assert_eq!(relative_path(root, Path::new("/ws/src/lib.rs")), "src/lib.rs");
+        assert_eq!(
+            relative_path(root, Path::new("/ws/src/lib.rs")),
+            "src/lib.rs"
+        );
         // Absolute scopes stay absolute.
-        assert_eq!(relative_path(root, Path::new("/elsewhere/a.rs")), "/elsewhere/a.rs");
+        assert_eq!(
+            relative_path(root, Path::new("/elsewhere/a.rs")),
+            "/elsewhere/a.rs"
+        );
         assert!(is_excluded("target/debug/build.rs"));
         assert!(is_excluded("node_modules/pkg/index.js"));
         assert!(!is_excluded("crates/foo/target/x.rs"));

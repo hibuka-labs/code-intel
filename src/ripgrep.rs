@@ -34,8 +34,7 @@ pub fn search(
         _ => ".".to_string(),
     };
 
-    let regex =
-        regex::bytes::Regex::new(pattern).map_err(|e| format!("invalid pattern: {e}"))?;
+    let regex = regex::bytes::Regex::new(pattern).map_err(|e| format!("invalid pattern: {e}"))?;
     let per_file_cap = if max_matches == 0 {
         usize::MAX
     } else {
@@ -61,7 +60,9 @@ pub fn search(
         if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
             continue;
         }
-        let Ok(bytes) = std::fs::read(file) else { continue };
+        let Ok(bytes) = std::fs::read(file) else {
+            continue;
+        };
         // ripgrep treats any NUL byte as a binary file and skips it; so do we,
         // otherwise UTF-16 and blobs would produce garbage hits.
         if bytes.contains(&0) {

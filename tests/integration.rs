@@ -2,7 +2,6 @@
 //! extraction, search, and the LSP manager's injected routing.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use code_intel::lang::{detect_languages, is_code_path, lsp_spec_for_path};
 use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
@@ -175,15 +174,23 @@ fn registry_and_resolver_agree_for_known_languages() {
 }
 
 #[test]
-fn rg_is_available_for_search_backed_features() {
-    // search/repomap shell out to ripgrep; fail loudly here if the environment
-    // lacks it (CI prerequisite), with a readable message.
-    let ok = Command::new("rg")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success());
+fn search_needs_no_ripgrep_on_path() {
+    // Both walks (repo map + content search) run in-process since 0.1.3, so
+    // there is no `rg` binary to require. This test used to assert the
+    // opposite — that ripgrep must be on PATH — which made it a CI
+    // prerequisite that the Windows and macOS runners did not satisfy
+    // (and which the crate no longer needs).
+    //
+    // The contract is now: the search finds its matches on its own. If any
+    // code path still shelled out to `rg`, the search below would fail on a
+    // machine without ripgrep — which is exactly the CI environment this
+    // replaced.
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("needle.rs"), "fn needle() {}\n").unwrap();
+
+    let out = code_intel::ripgrep::search(root.path(), "needle", None, 10).unwrap();
     assert!(
-        ok.unwrap_or(false),
-        "ripgrep (`rg`) must be on PATH for code-intel tests"
+        out.contains("needle"),
+        "search must work without a ripgrep binary: {out}"
     );
 }

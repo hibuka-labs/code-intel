@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-11-22
+
+### Changed
+
+- **Both walks now run in-process: no `rg` binary needed.** The repo map and
+  the content search used to shell out to ripgrep (`rg --files`, `rg --json`).
+  They now walk the tree with `ignore` and match with `regex` directly. A
+  consumer that shipped the crate to a machine without ripgrep — a Windows
+  box, a minimal container, a locked-down CI runner — got
+  `No such file or directory (os error 2)` where the tool should have worked.
+  The search also loses a 60 ms+ child process per call on Windows.
+- The walk is unchanged in what it covers: `target/` and `node_modules/` stay
+  out even in a bare directory with no `.gitignore`, files over 1 MB are
+  skipped, and a NUL byte still marks a file binary (so UTF-16 and blobs
+  produce no garbage hits).
+- Results keep their `file:line: text` shape and their `/`-separated paths,
+  so consumers that split on `/` are unaffected.
+
+### Fixed
+
+- The crate's own test suite no longer requires ripgrep on `PATH`. The
+  prerequisite test asserted the opposite of the new contract and made the
+  Windows and macOS CI runners fail for a binary the crate no longer calls.
+- Formatting: the in-process walk landed unformatted.
+
 ## [0.1.2] - 2026-11-13
 
 ### Added
