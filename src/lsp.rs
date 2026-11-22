@@ -859,7 +859,17 @@ mod tests {
 
     #[test]
     fn parse_publish_diagnostics_extracts_path_and_entries() {
-        let uri = Url::from_file_path("/tmp/ws/src/main.rs").unwrap();
+        // The path must be absolute **on the platform running the test**:
+        // `Url::from_file_path` rejects a path it cannot express as a file
+        // URL, and `/tmp/...` is not a Windows path. So the fixture is built
+        // from the platform's own root — and the round-trip must give the
+        // same path back.
+        let path = if cfg!(windows) {
+            Path::new(r"C:\ws\src\main.rs")
+        } else {
+            Path::new("/tmp/ws/src/main.rs")
+        };
+        let uri = Url::from_file_path(path).unwrap();
         let params = PublishDiagnosticsParams {
             uri,
             diagnostics: vec![Diagnostic::new(
@@ -874,8 +884,8 @@ mod tests {
             version: None,
         };
         let params = serde_json::to_value(params).unwrap();
-        let (path, entries) = parse_publish_diagnostics(&params).unwrap();
-        assert_eq!(path, Path::new("/tmp/ws/src/main.rs"));
+        let (got, entries) = parse_publish_diagnostics(&params).unwrap();
+        assert_eq!(got, path);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].line, 5);
         assert_eq!(entries[0].column, 6);
