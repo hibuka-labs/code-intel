@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-11-27
+
+### Fixed
+- **The diagnostics fixture names a path the platform actually has.** The test
+  pinned a path that does not exist on every platform, so the fixture failed
+  where the path was absent instead of testing the diagnostics.
+
 ## [0.1.3] - 2026-11-22
 
 ### Changed
